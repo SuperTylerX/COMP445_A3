@@ -9,13 +9,10 @@ import java.nio.ByteBuffer;
 import java.nio.channels.DatagramChannel;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.List;
 import java.util.Set;
 
-import common.PacketList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -77,6 +74,7 @@ public class UDPClient {
 
             logger.info("Sending SYN packet to router at {}", routerAddr);
             channel.send(p.toBuffer(), routerAddr);
+            logger.info("Packet {}", p);
 
             // Try to receive a packet within timeout.
             channel.configureBlocking(false);
@@ -90,8 +88,9 @@ public class UDPClient {
             while (true) {
                 while (keys.isEmpty()) {
                     logger.error("No response after timeout");
-                    logger.info("resending SYN packet to server");
+                    logger.info("Resending SYN packet to server");
                     channel.send(p.toBuffer(), routerAddr);
+                    logger.info("Packet {}", p);
 
                     // Try to receive a packet within timeout.
                     channel.configureBlocking(false);
@@ -99,6 +98,7 @@ public class UDPClient {
                     channel.register(selector, OP_READ);
                     logger.info("Waiting for the response");
                     selector.select(TIMEOUT);
+                    keys = selector.selectedKeys();
                 }
 
                 ByteBuffer buf = ByteBuffer.allocate(Packet.MAX_LEN);
@@ -120,18 +120,17 @@ public class UDPClient {
                             .create();
 
                     channel.send(p.toBuffer(), routerAddr);
+                    logger.info("Packet {}", p);
 
 
                     // 3 way handshaking done, start to send HTTP request
-
                     logger.info("Send HTTP request...");
 
+
+                    // Split the Http request into packets
 //                    List<String> splitHttpRequestStr = getStrList(msg, (Packet.MAX_LEN - Packet.MIN_LEN) / 2);
                     List<String> splitHttpRequestStr = getStrList(msg, 20);
-
                     List<Packet> reqPacketList = new ArrayList<>();
-
-
                     for (String str : splitHttpRequestStr) {
                         p = new Packet.Builder()
                                 .setType(Type.DATA.ordinal())
@@ -140,11 +139,11 @@ public class UDPClient {
                                 .setPeerAddress(serverAddr.getAddress())
                                 .setPayload(str.getBytes())
                                 .create();
-
                         reqPacketList.add(p);
                     }
 
                     logger.info("Packet length {}", reqPacketList.size());
+                    logger.info("Last packet seq should be {}", reqPacketList.get(reqPacketList.size() - 1).getSequenceNumber());
 
                     int windowStart = 0;
 
@@ -166,9 +165,7 @@ public class UDPClient {
                             channel.register(selector, OP_READ);
                             logger.info("Waiting for response");
                             selector.select(TIMEOUT);
-
                             keys = selector.selectedKeys();
-
 
                             if (keys.isEmpty()) {
                                 logger.error("No response after timeout");
@@ -179,8 +176,7 @@ public class UDPClient {
                                 resp = Packet.fromBuffer(buf);
                                 logger.info("Received Packet: {}", resp);
 
-
-                                // Set ACK
+                                // Set the packet to ACK
                                 for (Packet item : reqPacketList) {
                                     if (item.getSequenceNumber() == resp.getSequenceNumber()) {
                                         item.setACK(true);
@@ -188,22 +184,27 @@ public class UDPClient {
                                     }
                                 }
 
-                                // Move Window
+                                // Move window forward
                                 if (resp.getSequenceNumber() - 2 == windowStart) {
                                     for (int i = windowStart; i < Math.min(windowStart + WINDOW_SIZE, reqPacketList.size()); i++) {
                                         if (reqPacketList.get(i).isACK()) {
                                             windowStart = i + 1;
-
+                                            // Send next packet
+                                            if (windowStart + WINDOW_SIZE <= reqPacketList.size()) {
+                                                Packet packet = reqPacketList.get(windowStart + WINDOW_SIZE - 1);
+                                                channel.send(packet.toBuffer(), routerAddr);
+                                                logger.info("Send Packet {}", packet);
+                                                j--;
+                                            }
                                         }
                                     }
                                 }
-
 
                             }
                         }
 
 
-                        // Check all packet are ACK
+                        // Check all packets are ACK
                         boolean flag = true;
                         for (Packet item : reqPacketList) {
                             if (!item.isACK()) {
@@ -224,10 +225,6 @@ public class UDPClient {
                 }
             }
 
-//            logger.info("Packet: {}", resp);
-//            logger.info("Router: {}", router);
-//            String payload = new String(resp.getPayload(), StandardCharsets.UTF_8);
-//            logger.info("Payload: {}", payload);
 
             keys.clear();
 
@@ -235,22 +232,6 @@ public class UDPClient {
         } catch (IOException e) {
             e.printStackTrace();
         }
-    }
-
-    public static Set<SelectionKey> sendPacket(DatagramChannel channel, Packet p, SocketAddress routerAddr) throws IOException {
-
-        channel.send(p.toBuffer(), routerAddr);
-
-        logger.info("Sending to router at {}", routerAddr);
-        // Try to receive a packet within timeout.
-        channel.configureBlocking(false);
-        Selector selector = Selector.open();
-        channel.register(selector, OP_READ);
-        if (!Type.values()[p.getType()].equals(Type.ACK)) {
-            logger.info("Waiting for the response");
-            selector.select(5000);
-        }
-        return selector.selectedKeys();
     }
 
     public static long getSeq() {
