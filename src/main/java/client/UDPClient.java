@@ -141,6 +141,14 @@ public class UDPClient {
                                 .create();
                         reqPacketList.add(p);
                     }
+                    p = new Packet.Builder()
+                            .setType(Type.DATA.ordinal())
+                            .setSequenceNumber(getSeq())
+                            .setPortNumber(serverAddr.getPort())
+                            .setPeerAddress(serverAddr.getAddress())
+                            .setPayload("--HTTP END--".getBytes())
+                            .create();
+                    reqPacketList.add(p);
 
                     logger.info("Packet length {}", reqPacketList.size());
                     logger.info("Last packet seq should be {}", reqPacketList.get(reqPacketList.size() - 1).getSequenceNumber());
@@ -154,7 +162,8 @@ public class UDPClient {
                             Packet packet = reqPacketList.get(i);
                             if (!packet.isACK()) {
                                 channel.send(packet.toBuffer(), routerAddr);
-                                logger.info("Send Packet {}", packet);
+                                logger.info("上来了");
+                                logger.info("Send Packet{} , windowStart {}, windowEnd {}", packet, windowStart + 2, windowStart + WINDOW_SIZE + 1);
                                 cnt++;
                             }
                         }
@@ -163,7 +172,6 @@ public class UDPClient {
                             channel.configureBlocking(false);
                             selector = Selector.open();
                             channel.register(selector, OP_READ);
-                            logger.info("Waiting for response");
                             selector.select(TIMEOUT);
                             keys = selector.selectedKeys();
 
@@ -179,6 +187,7 @@ public class UDPClient {
                                 // Set the packet to ACK
                                 for (Packet item : reqPacketList) {
                                     if (item.getSequenceNumber() == resp.getSequenceNumber()) {
+                                        logger.info("ACK {}", item.getSequenceNumber());
                                         item.setACK(true);
                                         break;
                                     }
@@ -188,14 +197,17 @@ public class UDPClient {
                                 if (resp.getSequenceNumber() - 2 == windowStart) {
                                     for (int i = windowStart; i < Math.min(windowStart + WINDOW_SIZE, reqPacketList.size()); i++) {
                                         if (reqPacketList.get(i).isACK()) {
+                                            logger.info("ACK是{}", reqPacketList.get(i));
                                             windowStart = i + 1;
                                             // Send next packet
                                             if (windowStart + WINDOW_SIZE <= reqPacketList.size()) {
                                                 Packet packet = reqPacketList.get(windowStart + WINDOW_SIZE - 1);
                                                 channel.send(packet.toBuffer(), routerAddr);
-                                                logger.info("Send Packet {}", packet);
+                                                logger.info("Send Packet{} , windowStart {}, windowEnd {}", packet, windowStart + 2, windowStart + WINDOW_SIZE + 1);
                                                 j--;
                                             }
+                                        } else {
+                                            break;
                                         }
                                     }
                                 }
