@@ -9,12 +9,16 @@ import java.nio.ByteBuffer;
 import java.nio.channels.DatagramChannel;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Set;
 
+import common.Utils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import server.UDPServer;
 
 import static java.nio.channels.SelectionKey.OP_READ;
 
@@ -26,6 +30,8 @@ public class UDPClient {
     }
 
     static long seq = 0;
+    static long basedSeq = 0;
+
 
     public static void main(String[] args) {
         // Router address
@@ -54,7 +60,7 @@ public class UDPClient {
     }
 
     private static final Logger logger = LoggerFactory.getLogger(UDPClient.class);
-    private static final int TIMEOUT = 2000;
+    private static final int TIMEOUT = 500;
     private static final int WINDOW_SIZE = 4;
 
     private static void runClient(SocketAddress routerAddr, InetSocketAddress serverAddr, String msg) {
@@ -129,7 +135,7 @@ public class UDPClient {
 
                     // Split the Http request into packets
 //                    List<String> splitHttpRequestStr = getStrList(msg, (Packet.MAX_LEN - Packet.MIN_LEN) / 2);
-                    List<String> splitHttpRequestStr = getStrList(msg, 20);
+                    List<String> splitHttpRequestStr = Utils.getStrList(msg, 20);
                     List<Packet> reqPacketList = new ArrayList<>();
                     for (String str : splitHttpRequestStr) {
                         p = new Packet.Builder()
@@ -149,6 +155,7 @@ public class UDPClient {
                             .setPayload("--HTTP END--".getBytes())
                             .create();
                     reqPacketList.add(p);
+                    basedSeq = p.getSequenceNumber() + 1;
 
                     logger.info("Packet length {}", reqPacketList.size());
                     logger.info("Last packet seq should be {}", reqPacketList.get(reqPacketList.size() - 1).getSequenceNumber());
@@ -228,8 +235,66 @@ public class UDPClient {
                             break;
                         }
 
+                    }
+                    logger.info("Start to Receive Http Response");
+                    // Start to receive HTTP response
+
+                    HashMap<Integer, Packet> resPacketList = new HashMap<>();
+                    int totalNumberOfPacket = 0;
+
+                    while (true) {
+
+                        channel.configureBlocking(false);
+                        selector = Selector.open();
+                        channel.register(selector, OP_READ);
+                        selector.select(TIMEOUT);
+                        keys = selector.selectedKeys();
+
+                        if (keys.isEmpty()) {
+                            logger.error("No response after timeout");
+                        } else {
+                            buf.clear();
+                            router = channel.receive(buf);
+                            // Parse a packet from the received raw data.
+                            buf.flip();
+                            Packet packet = Packet.fromBuffer(buf);
+                            buf.flip();
+                            int type = packet.getType();
+
+                            logger.info("Received Packet {} ", packet);
+
+                            if (Type.values()[type].equals(Type.DATA)) {
+
+                                if (new String(packet.getPayload(), StandardCharsets.UTF_8).equals("--HTTP END--")) {
+                                    totalNumberOfPacket = (int) packet.getSequenceNumber() - (int) basedSeq + 1;
+                                    logger.info("totalNumberOfPacket {}, SequenceNumber{}, basedSeq {}", totalNumberOfPacket, packet.getSequenceNumber(), basedSeq);
+                                }
+                                resPacketList.put((int) packet.getSequenceNumber(), packet);
+
+                                resp = packet.toBuilder()
+                                        .setType(Type.ACK.ordinal())
+                                        .setSequenceNumber(packet.getSequenceNumber())
+                                        .create();
+                                channel.send(resp.toBuffer(), router);
+                                logger.info("Send packet {}", resp);
+
+                                logger.info("resPacketLis {}", resPacketList);
+                                if (totalNumberOfPacket == resPacketList.size()) {
+                                    break;
+                                }
+                            }
+                        }
 
                     }
+
+                    logger.info("收到所有包了");
+                    StringBuilder httpResStrBuilder = new StringBuilder();
+                    for (long i = basedSeq; i < resPacketList.size() + basedSeq - 1; i++) {
+                        httpResStrBuilder.append(new String(resPacketList.get((int) i).getPayload(), StandardCharsets.UTF_8));
+                    }
+                    System.out.println(httpResStrBuilder.toString());
+
+
 
                     break;
                 } else {
@@ -256,25 +321,4 @@ public class UDPClient {
     }
 
 
-    public static List<String> getStrList(String inputString, int length) {
-
-        List<String> list = new ArrayList<String>();
-        for (int index = 0; index < Math.ceil(inputString.length() / (double) length); index++) {
-            String childStr = substring(inputString, index * length,
-                    (index + 1) * length);
-            list.add(childStr);
-        }
-        return list;
-
-    }
-
-    public static String substring(String str, int f, int t) {
-        if (f > str.length())
-            return null;
-        if (t > str.length()) {
-            return str.substring(f, str.length());
-        } else {
-            return str.substring(f, t);
-        }
-    }
 }
