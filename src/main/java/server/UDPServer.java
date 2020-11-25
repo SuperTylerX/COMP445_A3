@@ -1,6 +1,5 @@
 package server;
 
-import client.UDPClient;
 import common.Utils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,21 +13,17 @@ import java.nio.channels.DatagramChannel;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 import common.Packet;
 
 import static java.nio.channels.SelectionKey.OP_READ;
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static java.util.Arrays.asList;
 
 public class UDPServer {
 
     enum Type {
-        ACK, NAK, SYN, SYNACK, DATA
+        ACK, NAK, SYN, SYNACK, DATA, FIN, FINACK
     }
 
     static long seq = 0;
@@ -165,93 +160,165 @@ public class UDPServer {
 
                         int windowStart = 0;
 
+                        loop3:
                         while (true) {
-                            logger.info("最顶上");
-                            int cnt = 0;
-                            for (int i = windowStart; i < Math.min(windowStart + WINDOW_SIZE, resPacketList.size()); i++) {
-                                packet = resPacketList.get(i);
-                                if (!packet.isACK()) {
-                                    channel.send(packet.toBuffer(), router);
-                                    logger.info("上来了");
-                                    logger.info("Send Packet{} , windowStart {}, windowEnd {}", packet, windowStart + basedSeq, windowStart + WINDOW_SIZE + basedSeq - 1);
-                                    cnt++;
-                                }
-                            }
-
-                            for (int j = 0; j < cnt; j++) {
-                                channel.configureBlocking(false);
-                                Selector selector = Selector.open();
-                                channel.register(selector, OP_READ);
-                                selector.select(TIMEOUT);
-                                Set<SelectionKey> keys = selector.selectedKeys();
-
-                                if (keys.isEmpty()) {
-                                    logger.error("No response after timeout");
-                                } else {
-                                    buf = ByteBuffer.allocate(Packet.MAX_LEN);
-                                    router = channel.receive(buf);
-                                    buf.flip();
-                                    resp = Packet.fromBuffer(buf);
-                                    logger.info("Received Packet: {}", resp);
-
-                                    if (Type.values()[resp.getType()].equals(Type.DATA)) {
-                                        logger.info("Received Redundant Packet, Send ACK");
-                                        packet = resp.toBuilder()
-                                                .setType(Type.ACK.ordinal())
-                                                .setSequenceNumber(resp.getSequenceNumber())
-                                                .create();
+                            loop2:
+                            while (true) {
+                                logger.info("最顶上");
+                                int cnt = 0;
+                                for (int i = windowStart; i < Math.min(windowStart + WINDOW_SIZE, resPacketList.size()); i++) {
+                                    packet = resPacketList.get(i);
+                                    if (!packet.isACK()) {
                                         channel.send(packet.toBuffer(), router);
-                                        continue;
+                                        logger.info("上来了");
+                                        logger.info("Send Packet{} , windowStart {}, windowEnd {}", packet, windowStart + basedSeq, windowStart + WINDOW_SIZE + basedSeq - 1);
+                                        cnt++;
                                     }
-                                    // Set the packet to ACK
-                                    for (Packet item : resPacketList) {
-                                        if (item.getSequenceNumber() == resp.getSequenceNumber()) {
-                                            logger.info("ACK {}", item.getSequenceNumber());
-                                            item.setACK(true);
-                                            break;
-                                        }
-                                    }
+                                }
 
-                                    // Move window forward
-                                    if (resp.getSequenceNumber() - basedSeq == windowStart) {
-                                        for (int i = windowStart; i < Math.min(windowStart + WINDOW_SIZE, resPacketList.size()); i++) {
-                                            if (resPacketList.get(i).isACK()) {
-                                                logger.info("ACK是{}", resPacketList.get(i));
-                                                windowStart = i + 1;
-                                                // Send next packet
-                                                if (windowStart + WINDOW_SIZE <= resPacketList.size()) {
-                                                    packet = resPacketList.get(windowStart + WINDOW_SIZE - 1);
-                                                    channel.send(packet.toBuffer(), router);
-                                                    logger.info("Send Packet{} , windowStart {}, windowEnd {}", packet, windowStart + basedSeq, windowStart + WINDOW_SIZE + basedSeq - 1);
-                                                    j--;
-                                                }
-                                            } else {
+                                for (int j = 0; j < cnt; j++) {
+                                    channel.configureBlocking(false);
+                                    Selector selector = Selector.open();
+                                    channel.register(selector, OP_READ);
+                                    selector.select(TIMEOUT);
+                                    Set<SelectionKey> keys = selector.selectedKeys();
+
+                                    if (keys.isEmpty()) {
+                                        selector.close();
+                                        logger.error("No response after timeout");
+                                    } else {
+                                        buf = ByteBuffer.allocate(Packet.MAX_LEN);
+                                        router = channel.receive(buf);
+                                        buf.flip();
+                                        resp = Packet.fromBuffer(buf);
+                                        logger.info("Received Packet: {}", resp);
+
+                                        if (Type.values()[resp.getType()].equals(Type.DATA)) {
+                                            logger.info("Received Redundant Packet, Send ACK");
+                                            packet = resp.toBuilder()
+                                                    .setType(Type.ACK.ordinal())
+                                                    .setSequenceNumber(resp.getSequenceNumber())
+                                                    .create();
+                                            channel.send(packet.toBuffer(), router);
+                                            selector.close();
+                                            continue;
+                                        }
+                                        if (Type.values()[resp.getType()].equals(Type.FIN)) {
+                                            logger.info("Received FIN");
+                                            selector.close();
+                                            break loop3;
+                                        }
+                                        // Set the packet to ACK
+                                        for (Packet item : resPacketList) {
+                                            if (item.getSequenceNumber() == resp.getSequenceNumber()) {
+                                                logger.info("ACK {}", item.getSequenceNumber());
+                                                item.setACK(true);
                                                 break;
                                             }
                                         }
+
+                                        // Move window forward
+                                        if (resp.getSequenceNumber() - basedSeq == windowStart) {
+                                            for (int i = windowStart; i < Math.min(windowStart + WINDOW_SIZE, resPacketList.size()); i++) {
+                                                if (resPacketList.get(i).isACK()) {
+                                                    logger.info("ACK是{}", resPacketList.get(i));
+                                                    windowStart = i + 1;
+                                                    // Send next packet
+                                                    if (windowStart + WINDOW_SIZE <= resPacketList.size()) {
+                                                        packet = resPacketList.get(windowStart + WINDOW_SIZE - 1);
+                                                        channel.send(packet.toBuffer(), router);
+                                                        logger.info("Send Packet{} , windowStart {}, windowEnd {}", packet, windowStart + basedSeq, windowStart + WINDOW_SIZE + basedSeq - 1);
+                                                        j--;
+                                                    }
+                                                } else {
+                                                    break;
+                                                }
+                                            }
+                                        }
+
                                     }
 
+                                    selector.close();
                                 }
-                            }
 
-
-                            // Check all packets are ACK
-                            boolean flag = true;
-                            for (Packet item : resPacketList) {
-                                if (!item.isACK()) {
-                                    flag = false;
+                                channel.configureBlocking(true);
+                                // Check all packets are ACK
+                                boolean flag = true;
+                                for (Packet item : resPacketList) {
+                                    if (!item.isACK()) {
+                                        flag = false;
+                                        break;
+                                    }
+                                }
+                                if (flag) {
                                     break;
                                 }
                             }
-                            if (flag) {
+                            // Waiting for FIN
+                            buf.clear();
+                            router = channel.receive(buf);
+                            // Parse a packet from the received raw data.
+                            buf.flip();
+                            resp = Packet.fromBuffer(buf);
+                            buf.flip();
+                            type = resp.getType();
+
+                            logger.info("Received Packet {} ", resp);
+                            if (Type.values()[type].equals(Type.FIN)) {
                                 break;
                             }
+                        }
+
+//                        channel.configureBlocking(true);
+                        // If the packet is FIN send FIN-ACK
+                        if (Type.values()[resp.getType()].equals(Type.FIN)) {
+
+                            p = resp.toBuilder()
+                                    .setType(Type.FINACK.ordinal())
+                                    .setSequenceNumber(resp.getSequenceNumber())
+                                    .create();
+
+                            channel.send(p.toBuffer(), router);
+                            logger.info("Send FINACK");
+                            logger.info("Packet {}", p);
+
+                            Date timerStart = new Date();
+                            boolean fin=false;
+                            while (true) {
+                                Date timerEnd = new Date();
+                                if (timerEnd.getTime() - timerStart.getTime() > 5000){
+                                    logger.info("Timeout, close the connection");
+                                    break ;
+                                }
+                                channel.configureBlocking(true);
+                                buf.clear();
+                                router = channel.receive(buf);
+                                // Parse a packet from the received raw data.
+                                buf.flip();
+                                resp = Packet.fromBuffer(buf);
+                                buf.flip();
+                                type = packet.getType();
+
+                                logger.info("Received Packet: {}", resp);
+
+                                if (Type.values()[resp.getType()].equals(Type.FIN)) {
+                                    p = resp.toBuilder()
+                                            .setType(Type.FINACK.ordinal())
+                                            .setSequenceNumber(resp.getSequenceNumber())
+                                            .create();
+
+                                    channel.send(p.toBuffer(), router);
+                                    timerStart = new Date();
+                                    logger.info("Send Packet {}", p);
+                                } else if (Type.values()[resp.getType()].equals(Type.ACK)) {
+                                    logger.info("GET ACK, close the connection!");
+                                    break loop1;
+                                }
+                            }
+
 
                         }
 
-
-                        logger.info("出来了");
-                        System.exit(0);
                     }
 
 
@@ -264,6 +331,8 @@ public class UDPServer {
                     logger.info("Send packet {}", resp);
                 }
             }
+        } catch (Exception e) {
+            e.printStackTrace();
         }
 
     }

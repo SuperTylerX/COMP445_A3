@@ -18,7 +18,6 @@ import java.util.Set;
 import common.Utils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import server.UDPServer;
 
 import static java.nio.channels.SelectionKey.OP_READ;
 
@@ -26,7 +25,7 @@ import static java.nio.channels.SelectionKey.OP_READ;
 public class UDPClient {
 
     enum Type {
-        ACK, NAK, SYN, SYNACK, DATA
+        ACK, NAK, SYN, SYNACK, DATA, FIN, FINACK
     }
 
     static long seq = 0;
@@ -294,7 +293,61 @@ public class UDPClient {
                     }
                     System.out.println(httpResStrBuilder.toString());
 
+                    // Send FIN
+                    p = new Packet.Builder()
+                            .setType(Type.FIN.ordinal())
+                            .setSequenceNumber(resPacketList.get(resPacketList.size() + (int) basedSeq - 1).getSequenceNumber() + 1)
+                            .setPortNumber(serverAddr.getPort())
+                            .setPeerAddress(serverAddr.getAddress())
+                            .setPayload("This is FIN".getBytes())
+                            .create();
 
+                    logger.info("Sending FIN packet to router at {}", routerAddr);
+                    channel.send(p.toBuffer(), routerAddr);
+                    logger.info("Packet {}", p);
+
+                    // Try to receive a packet within timeout.
+                    channel.configureBlocking(false);
+                    selector = Selector.open();
+                    channel.register(selector, OP_READ);
+                    logger.info("Waiting for the response");
+                    selector.select(TIMEOUT);
+
+                    keys = selector.selectedKeys();
+
+                    while (keys.isEmpty()) {
+                        logger.info("Sending FIN packet to router at {}", routerAddr);
+                        channel.send(p.toBuffer(), routerAddr);
+                        logger.info("Packet {}", p);
+
+                        // Try to receive a packet within timeout.
+                        channel.configureBlocking(false);
+                        selector = Selector.open();
+                        channel.register(selector, OP_READ);
+                        logger.info("Waiting for the response");
+                        selector.select(TIMEOUT);
+                        keys = selector.selectedKeys();
+                    }
+
+                    buf = ByteBuffer.allocate(Packet.MAX_LEN);
+                    router = channel.receive(buf);
+                    buf.flip();
+                    resp = Packet.fromBuffer(buf);
+                    logger.info("Received Packet: {}", resp);
+
+                    // If the packet is FIN-ACK
+                    if (Type.values()[resp.getType()].equals(Type.FINACK)) {
+                        logger.info("Sending ACK for FIN-ACK packet to router at {}", routerAddr);
+
+                        p = resp.toBuilder()
+                                .setSequenceNumber(resp.getSequenceNumber() + 1)
+                                .setType(Type.ACK.ordinal())
+                                .setPayload("ACK for FINACK".getBytes())
+                                .create();
+
+                        channel.send(p.toBuffer(), routerAddr);
+                        logger.info("Packet {}", p);
+                    }
 
                     break;
                 } else {

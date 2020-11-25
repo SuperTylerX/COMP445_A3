@@ -25,7 +25,7 @@ public class Packet {
     private boolean isACK;
 
     enum Type {
-        ACK, NAK, SYN, SYNACK, DATA
+        ACK, NAK, SYN, SYNACK, DATA, FIN, FINACK
     }
 
     public Packet(int type, long sequenceNumber, InetAddress peerAddress, int peerPort, byte[] payload) {
