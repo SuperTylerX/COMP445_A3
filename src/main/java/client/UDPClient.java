@@ -62,10 +62,9 @@ public class UDPClient {
     private static final int TIMEOUT = 500;
     private static final int WINDOW_SIZE = 4;
 
-    private static void runClient(SocketAddress routerAddr, InetSocketAddress serverAddr, String msg) {
-
+    static String runClient(SocketAddress routerAddr, InetSocketAddress serverAddr, String msg) {
+        String res = "";
         try (DatagramChannel channel = DatagramChannel.open()) {
-
 
             // 3 way handshaking
 
@@ -133,8 +132,7 @@ public class UDPClient {
 
 
                     // Split the Http request into packets
-//                    List<String> splitHttpRequestStr = getStrList(msg, (Packet.MAX_LEN - Packet.MIN_LEN) / 2);
-                    List<String> splitHttpRequestStr = Utils.getStrList(msg, 20);
+                    List<String> splitHttpRequestStr = Utils.getStrList(msg, Packet.MAX_LEN - Packet.MIN_LEN);
                     List<Packet> reqPacketList = new ArrayList<>();
                     for (String str : splitHttpRequestStr) {
                         p = new Packet.Builder()
@@ -168,7 +166,6 @@ public class UDPClient {
                             Packet packet = reqPacketList.get(i);
                             if (!packet.isACK()) {
                                 channel.send(packet.toBuffer(), routerAddr);
-                                logger.info("上来了");
                                 logger.info("Send Packet{} , windowStart {}, windowEnd {}", packet, windowStart + 2, windowStart + WINDOW_SIZE + 1);
                                 cnt++;
                             }
@@ -193,7 +190,7 @@ public class UDPClient {
                                 // Set the packet to ACK
                                 for (Packet item : reqPacketList) {
                                     if (item.getSequenceNumber() == resp.getSequenceNumber()) {
-                                        logger.info("ACK {}", item.getSequenceNumber());
+                                        logger.info("Set packet {} to ACK", item.getSequenceNumber());
                                         item.setACK(true);
                                         break;
                                     }
@@ -203,7 +200,6 @@ public class UDPClient {
                                 if (resp.getSequenceNumber() - 2 == windowStart) {
                                     for (int i = windowStart; i < Math.min(windowStart + WINDOW_SIZE, reqPacketList.size()); i++) {
                                         if (reqPacketList.get(i).isACK()) {
-                                            logger.info("ACK是{}", reqPacketList.get(i));
                                             windowStart = i + 1;
                                             // Send next packet
                                             if (windowStart + WINDOW_SIZE <= reqPacketList.size()) {
@@ -277,7 +273,6 @@ public class UDPClient {
                                 channel.send(resp.toBuffer(), router);
                                 logger.info("Send packet {}", resp);
 
-                                logger.info("resPacketLis {}", resPacketList);
                                 if (totalNumberOfPacket == resPacketList.size()) {
                                     break;
                                 }
@@ -286,12 +281,12 @@ public class UDPClient {
 
                     }
 
-                    logger.info("收到所有包了");
+                    logger.info("Received all the HTTP response packets!!!");
                     StringBuilder httpResStrBuilder = new StringBuilder();
                     for (long i = basedSeq; i < resPacketList.size() + basedSeq - 1; i++) {
                         httpResStrBuilder.append(new String(resPacketList.get((int) i).getPayload(), StandardCharsets.UTF_8));
                     }
-                    System.out.println(httpResStrBuilder.toString());
+                    res = httpResStrBuilder.toString();
 
                     // Send FIN
                     p = new Packet.Builder()
@@ -362,6 +357,8 @@ public class UDPClient {
         } catch (IOException e) {
             e.printStackTrace();
         }
+
+        return res;
     }
 
     public static long getSeq() {

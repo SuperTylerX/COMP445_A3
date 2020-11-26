@@ -32,7 +32,7 @@ public class UDPServer {
     private static final int TIMEOUT = 500;
     private static final int WINDOW_SIZE = 4;
 
-    private void listenAndServe(int port) throws IOException {
+    void listenAndServe(int port, HttpfsService setting) throws IOException {
 
         try (DatagramChannel channel = DatagramChannel.open()) {
             channel.bind(new InetSocketAddress(port));
@@ -113,31 +113,20 @@ public class UDPServer {
                         for (int i = 2; i < reqPacketList.size() + 1; i++) {
                             httpReqStrBuilder.append(new String(reqPacketList.get(i).getPayload(), StandardCharsets.UTF_8));
                         }
-                        System.out.println(httpReqStrBuilder.toString());
+
+
+                        String HttpReq = httpReqStrBuilder.toString();
 
                         logger.info("Received All the Http Request Packet...");
                         logger.info("Start to processing HTTP Request...");
 
-                        String msg = "HTTP/1.1 404 Not Found\r\n" +
-                                "Date: Sun, 18 Oct 2012 10:36:20 GMT\r\n" +
-                                "Server: Apache/2.2.14 (Win32)\r\n" +
-                                "Content-Length: 230\r\n" +
-                                "Connection: Closed\r\n" +
-                                "Content-Type: text/html; charset=iso-8859-1\r\n" +
-                                "<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\">\r\n\r\n" +
-                                "<html>\r\n" +
-                                "<head>\r\n" +
-                                "   <title>404 Not Found</title>\r\n" +
-                                "</head>\r\n" +
-                                "<body>\r\n" +
-                                "   <h1>Not Found</h1>\r\n" +
-                                "   <p>The requested URL /t.html was not found on this server.</p>\r\n" +
-                                "</body>\r\n" +
-                                "</html>\r\n\r\n";
+                        HttpfsServiceThread hfst = new HttpfsServiceThread(HttpReq, setting);
+                        String msg = hfst.run();
 
                         logger.info("Process Done!");
                         logger.info("Start to sending HTTP Response");
-                        List<String> splitHttpResponseStr = Utils.getStrList(msg, 20);
+
+                        List<String> splitHttpResponseStr =  Utils.getStrList(msg, Packet.MAX_LEN - Packet.MIN_LEN);
                         List<Packet> resPacketList = new ArrayList<>();
 
                         for (String str : splitHttpResponseStr) {
@@ -170,7 +159,6 @@ public class UDPServer {
                                     packet = resPacketList.get(i);
                                     if (!packet.isACK()) {
                                         channel.send(packet.toBuffer(), router);
-                                        logger.info("上来了");
                                         logger.info("Send Packet{} , windowStart {}, windowEnd {}", packet, windowStart + basedSeq, windowStart + WINDOW_SIZE + basedSeq - 1);
                                         cnt++;
                                     }
@@ -269,7 +257,7 @@ public class UDPServer {
                             }
                         }
 
-//                        channel.configureBlocking(true);
+
                         // If the packet is FIN send FIN-ACK
                         if (Type.values()[resp.getType()].equals(Type.FIN)) {
 
@@ -283,12 +271,12 @@ public class UDPServer {
                             logger.info("Packet {}", p);
 
                             Date timerStart = new Date();
-                            boolean fin=false;
+                            boolean fin = false;
                             while (true) {
                                 Date timerEnd = new Date();
-                                if (timerEnd.getTime() - timerStart.getTime() > 5000){
+                                if (timerEnd.getTime() - timerStart.getTime() > 5000) {
                                     logger.info("Timeout, close the connection");
-                                    break ;
+                                    break;
                                 }
                                 channel.configureBlocking(true);
                                 buf.clear();
@@ -337,12 +325,12 @@ public class UDPServer {
 
     }
 
-    public static void main(String[] args) throws IOException {
-
-        int port = 8000;
-        UDPServer server = new UDPServer();
-        server.listenAndServe(port);
-    }
+//    public static void main(String[] args) throws IOException {
+//
+//        int port = 8000;
+//        UDPServer server = new UDPServer();
+//        server.listenAndServe(port);
+//    }
 
 
     public static long getSeq() {
